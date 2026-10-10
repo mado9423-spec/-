@@ -1,0 +1,134 @@
+rules_version = '2';
+
+// Data model (see docs/firebase-ar.md):
+//   users/{uid}                          the signed-in person's own preferences and active business
+//   orgs/{orgId}                         one business (company or sole trader)
+//   orgs/{orgId}/members/{uid}           who belongs and with which role: owner | admin | member | viewer
+//   orgs/{orgId}/invites/{email|phone}   pending invitations, keyed by the invitee's verified email or phone number
+//   orgs/{orgId}/shipments|credits|documents|activity/{id}   the business data
+// Everything not matched here is denied.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function orgPath(orgId) { return /databases/$(database)/documents/orgs/$(orgId); }
+    function memberPath(orgId, uid) { return /databases/$(database)/documents/orgs/$(orgId)/members/$(uid); }
+    function isMember(orgId) { return signedIn() && exists(memberPath(orgId, request.auth.uid)); }
+    function roleOf(orgId) { return get(memberPath(orgId, request.auth.uid)).data.role; }
+    function canWrite(orgId) { return isMember(orgId) && roleOf(orgId) in ['owner', 'admin', 'member']; }
+    function canManage(orgId) { return isMember(orgId) && roleOf(orgId) in ['owner', 'admin']; }
+    function isOwner(orgId) { return isMember(orgId) && roleOf(orgId) == 'owner'; }
+
+    // the invitee identity: a verified email (lower-cased) or a phone number
+    function myKey() {
+      return (request.auth.token.get('email', null) != null && request.auth.token.get('email_verified', false))
+        ? request.auth.token.email.lower()
+        : request.auth.token.get('phone_number', null);
+    }
+    function stamped() { return request.resource.data.updatedAt == request.time && request.resource.data.updatedBy == request.auth.uid; }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['activeOrgId', 'lang', 'theme', 'createdAt', 'updatedAt'])
+        && request.resource.data.get('lang', 'ar') in ['ar', 'en']
+        && request.resource.data.get('theme', null) in [null, 'light', 'dark']
+        && (request.resource.data.get('activeOrgId', null) == null
+            || existsAfter(memberPath(request.resource.data.activeOrgId, uid)));
+    }
+
+    // ---------- an invitation addressed to me (collection-group query by key) ----------
+    match /{path=**}/invites/{key} {
+      allow read: if signedIn() && myKey() != null && resource.data.key == myKey();
+    }
+
+    // ---------- orgs ----------
+    function validOrg(d) {
+      return d.keys().hasOnly(['name', 'type', 'stat', 'ptsCode', 'goods', 'valueBand', 'resell', 'requirements', 'tax', 'bankSel', 'simple', 'schema', 'createdBy', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['name', 'type', 'createdBy'])
+        && d.name is string && d.name.size() <= 120
+        && d.type in ['company', 'sole']
+        && d.get('requirements', {}) is map
+        && d.get('tax', {}) is map;
+    }
+    match /orgs/{orgId} {
+      allow get: if isMember(orgId);
+      // a new org must come with its owner membership in the same batch
+      allow create: if signedIn() && validOrg(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time
+        && existsAfter(memberPath(orgId, request.auth.uid))
+        && getAfter(memberPath(orgId, request.auth.uid)).data.role == 'owner';
+      allow update: if canWrite(orgId) && validOrg(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false; // delete a business with the Admin SDK / CLI so sub-collections go with it
+
+      // ---------- members ----------
+      function validMember(d) {
+        return d.keys().hasOnly(['role', 'joinedAt', 'displayName', 'email', 'phone', 'invitedBy'])
+          && d.role in ['owner', 'admin', 'member', 'viewer']
+          && d.joinedAt == request.time;
+      }
+      function inviteAccepted() {
+        return myKey() != null
+          && get(/databases/$(database)/documents/orgs/$(orgId)/invites/$(myKey())).data.status == 'pending'
+          && get(/databases/$(database)/documents/orgs/$(orgId)/invites/$(myKey())).data.role == request.resource.data.role
+          && get(/databases/$(database)/documents/orgs/$(orgId)/invites/$(myKey())).data.expiresAt > request.time;
+      }
+      match /members/{uid} {
+        allow read: if isMember(orgId);
+        allow create: if signedIn() && uid == request.auth.uid && validMember(request.resource.data)
+          && ((request.resource.data.role == 'owner' && !exists(orgPath(orgId)) && getAfter(orgPath(orgId)).data.createdBy == request.auth.uid)
+              || (request.resource.data.role != 'owner' && inviteAccepted()));
+        allow update: if isOwner(orgId) && uid != request.auth.uid && resource.data.role != 'owner'
+          && request.resource.data.role in ['admin', 'member', 'viewer']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role']);
+        allow delete: if resource.data.role != 'owner' && (isOwner(orgId) || uid == request.auth.uid);
+      }
+
+      // ---------- invites ----------
+      function validInvite(d, key) {
+        return d.keys().hasOnly(['key', 'role', 'status', 'invitedBy', 'orgName', 'createdAt', 'expiresAt'])
+          && d.key == key && key == key.lower() && key.matches('^[^/\\s]{3,120}$')
+          && d.role in ['admin', 'member', 'viewer'] && d.status == 'pending'
+          && d.invitedBy == request.auth.uid && d.createdAt == request.time
+          && d.expiresAt is timestamp && d.expiresAt <= request.time + duration.value(15, 'd')
+          && d.get('orgName', '') is string && d.get('orgName', '').size() <= 120;
+      }
+      match /invites/{key} {
+        allow get: if canManage(orgId) || (signedIn() && key == myKey());
+        allow list: if canManage(orgId);
+        allow create, update: if canManage(orgId) && validInvite(request.resource.data, key);
+        // the invitee marks it accepted in the same batch that creates the membership
+        allow update: if signedIn() && key == myKey() && resource.data.status == 'pending'
+          && request.resource.data.status == 'accepted' && request.resource.data.acceptedBy == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedBy', 'acceptedAt']);
+        allow delete: if canManage(orgId);
+      }
+
+      // ---------- business data ----------
+      match /shipments/{id} {
+        allow read: if isMember(orgId);
+        allow create, update: if canWrite(orgId) && request.resource.data.id == id && stamped();
+        allow delete: if canWrite(orgId);
+      }
+      match /credits/{id} {
+        allow read: if isMember(orgId);
+        allow create, update: if canWrite(orgId) && request.resource.data.no == id && stamped();
+        allow delete: if canWrite(orgId);
+      }
+      match /documents/{id} {
+        allow read: if isMember(orgId);
+        allow create, update: if canWrite(orgId) && request.resource.data.id == id && stamped();
+        allow delete: if canWrite(orgId);
+      }
+      match /activity/{id} {
+        allow read: if isMember(orgId);
+        allow create, update: if canWrite(orgId) && request.resource.data.id == id && stamped();
+        allow delete: if canWrite(orgId);
+      }
+    }
+  }
+}

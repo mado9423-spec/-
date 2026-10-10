@@ -1,109 +1,123 @@
-// End-to-end smoke test: drives the main flows in headless Chromium and fails on any console/page error.
-// Usage: node tests/smoke.mjs   (PW_ROOT=<dir containing node_modules/playwright> if playwright is installed globally)
+// Browser smoke test of the local (no-cloud) app: first-run onboarding for a company and a sole trader, Arabic and English,
+// direction switching, the simplified shipment view, demo data, brand preview, backup, and layout sanity. Fails on any console/page error.
+// Usage: node scripts/build.mjs && node tests/smoke.mjs      (PW_ROOT=<dir containing node_modules/playwright> for a global install)
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 
 let chromium;
-try { ({ chromium } = await import('playwright')); }
-catch { ({ chromium } = createRequire(process.env.PW_ROOT || '/opt/node22/lib/node_modules/')('playwright')); }
+if (process.env.PW_ROOT) ({ chromium } = createRequire(process.env.PW_ROOT.replace(/\/?$/, '/'))('playwright'));
+else ({ chromium } = await import('playwright'));
 
 const url = 'file://' + join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'index.html');
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
-const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ar' });
-const page = await ctx.newPage();
 const errors = [];
-page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
-page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text())) errors.push('console: ' + m.text()); });
-await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
-await page.goto(url);
-await page.waitForTimeout(900);
-
 let failed = 0;
-const step = async (name, fn) => {
-  try { await fn(); console.log('ok   ' + name); }
-  catch (e) { failed++; console.log('FAIL ' + name + ' - ' + String(e.message).split('\n')[0]); }
+const ok = (cond, msg) => { if (cond) console.log('  ok  ', msg); else { failed++; console.log('  FAIL', msg); } };
+
+async function open(lang, viewport = { width: 390, height: 844 }) {
+  const ctx = await browser.newContext({ viewport, locale: lang, acceptDownloads: true });
+  await ctx.addInitScript((l) => { if (!localStorage.getItem('app.lang')) localStorage.setItem('app.lang', l); }, lang);
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push(`${lang} pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text())) errors.push(`${lang} console: ${m.text()}`); });
+  await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
+  await page.goto(url);
+  await page.waitForTimeout(500);
+  return { ctx, page };
+}
+const T = {
+  ar: { go: 'ابدأ', company: 'شركة', sole: 'تاجر فردي', next: 'التالي', plan: 'أنشئ خطتي', app: 'ادخل التطبيق', demo: 'جرّب ببيانات تجريبية', settings: 'الإعدادات', nextStep: 'خطوتك التالية', ships: 'رحلاتي' },
+  en: { go: 'Get started', company: 'A company', sole: 'A sole trader', next: 'Next', plan: 'Build my plan', app: 'Go to the app', demo: 'Explore with demo data', settings: 'Settings', nextStep: 'Your next step', ships: 'Shipments' },
 };
-const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
-const wait = (ms = 450) => page.waitForTimeout(ms);
-const state = () => page.evaluate(() => JSON.parse(localStorage.getItem('sanad.v1')));
+const onb = (page, t) => page.locator(`.onb button:has-text("${t}")`).first().click();
+const overflowX = (page) => page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
 
-await step('home renders readiness + alerts', async () => {
-  const t = await page.innerText('.screen[data-tab=home]');
-  expect(/71%/.test(t), 'readiness 71% missing');
-  expect(t.includes('متوقفة عند الإفراج'), 'blocked-shipment alert missing');
-});
-await step('channel advisor recommends a path', async () => {
-  await page.click('.tool:has-text("مرشد القناة")'); await wait();
-  await page.fill('#ca-usd', '80000'); await wait(200);
-  expect((await page.innerText('.sheet')).includes('تحويل مباشر'), 'direct transfer not suggested for $80k');
-  await page.fill('#ca-usd', '250000'); await wait(200);
-  expect((await page.innerText('.sheet')).includes('اعتماد مستندي'), 'LC not suggested for $250k');
-  await page.keyboard.press('Escape'); await wait();
-});
-await step('document matcher flags weight mismatch then clears', async () => {
-  await page.click('.tool:has-text("مطابقة المستندات")'); await wait();
-  expect((await page.innerText('.sheet')).includes('الوزن'), 'mismatch not listed');
-  await page.click('.sheet button:has-text("اجعل الشهادة مطابقة")'); await wait(200);
-  expect((await page.innerText('.sheet')).includes('متطابقة'), 'did not turn green');
-  await page.keyboard.press('Escape'); await wait();
-});
-await step('importer approval requires a message, then advances ACI', async () => {
-  await page.click('#tab-ships'); await wait(250);
-  await page.click('.screen[data-tab=ships] .ship:has-text("SH-2610-014")'); await wait(700);
-  await page.click('.page .card.tint-lilac button:has-text("مراجعة وموافقة")'); await wait();
-  await page.click('.sheet button:has-text("موافقة")'); await wait(250);
-  expect((await state()).ships.find((s) => s.id === 'SH-2610-014').aci.status === 'importer_review', 'approved without message');
-  await page.fill('#ap-msg', 'تمت المراجعة'); await page.click('.sheet button:has-text("موافقة")'); await wait(800);
-  expect((await state()).ships.find((s) => s.id === 'SH-2610-014').aci.status === 'supplier_completion', 'status did not advance');
-});
-await step('ACI composer validates ISO 6346 container numbers', async () => {
-  await page.keyboard.press('Escape'); await wait(600);
-  await page.click('.screen[data-tab=ships] .ship:has-text("SH-2609-007")'); await wait(700);
-  await page.evaluate(() => { const g = [...document.querySelectorAll('.page .gate')].find((x) => x.id.endsWith('-aci')); if (!g.classList.contains('open')) g.querySelector('.ghead').click(); });
-  await page.click('.page .gate.open button:has-text("مُنسّق")'); await wait(800);
-  await page.evaluate(() => [...document.querySelectorAll('.page')].pop().querySelectorAll('details').forEach((d) => { d.open = true; }));
-  const box = page.locator('.page details:has-text("الحاويات") .mini-card').first().locator('input').first();
-  await box.fill('OLCU4829170'); await box.blur(); await wait();
-  expect((await page.locator('.page').last().innerText()).includes('غير صحيح'), 'invalid container not flagged');
-  await box.fill('OLCU4829175'); await box.blur(); await wait();
-  await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await wait(600);
-});
-await step('new LC wizard: swipe to confirm creates a draft LC', async () => {
-  await page.click('#tab-lcs'); await wait(300);
-  await page.click('.screen[data-tab=lcs] .btn.gold:has-text("تجهيز")'); await wait(700);
-  await page.fill('#lc-sup', 'Test Supplier Ltd');
-  await page.click('.page-foot button:has-text("التالي")'); await wait(400);
-  await page.click('.page-foot button:has-text("التالي")'); await wait(400);
-  const th = await page.locator('.swipe .th').boundingBox(); const sw = await page.locator('.swipe').boundingBox();
-  await page.mouse.move(th.x + th.width / 2, th.y + th.height / 2); await page.mouse.down();
-  await page.mouse.move(sw.x + 40, th.y + th.height / 2, { steps: 10 }); await page.mouse.up(); await wait(900);
-  expect((await state()).lcs.some((l) => l.supplier === 'Test Supplier Ltd' && l.status === 'draft'), 'LC not created');
-  await page.click('#ovl button'); await wait(900);
-  await page.keyboard.press('Escape'); await wait(400);
-});
-await step('portal message reader updates ACI status and number', async () => {
-  await page.click('#tab-docs'); await wait(300); await page.click('.seg button:has-text("أدوات")'); await wait(300);
-  await page.click('.screen[data-tab=docs] .card:has-text("قراءة إشعار")'); await wait();
-  await page.selectOption('#mr-ship', 'SH-2610-014');
-  await page.fill('#mr-text', 'تمت الموافقة - في انتظار بوليصة الشحن. رقم ACI: ACI-26-558210'); await wait(500);
-  await page.click('.sheet button:has-text("تطبيق على")'); await wait(700);
-  const s = (await state()).ships.find((x) => x.id === 'SH-2610-014');
-  expect(s.aci.status === 'awaiting_bl' && s.aci.number === 'ACI-26-558210', `got ${s.aci.status} / ${s.aci.number}`);
-});
-await step('FAQ search filters answers', async () => {
-  await page.click('#tab-hub'); await wait(300);
-  await page.fill('#faq-q', 'ACI'); await wait(300);
-  const n = await page.locator('.faq details').count();
-  expect(n > 0 && n < 14, 'unexpected FAQ count ' + n);
-});
-await step('theme toggle persists', async () => {
-  await page.click('#tab-home'); await wait(300);
-  await page.click('button[aria-label="تبديل المظهر"]'); await wait(300);
-  expect(['light', 'dark'].includes(await page.evaluate(() => document.documentElement.dataset.theme)), 'theme not set');
-});
+for (const [lang, who, name] of [['ar', 'company', 'شركة النور للمواد الغذائية'], ['en', 'sole', 'Salem Trading']]) {
+  console.log(`first run · ${lang} · ${who}`);
+  const t = T[lang];
+  const { ctx, page } = await open(lang);
+  ok(await page.evaluate(() => document.documentElement.dir) === (lang === 'ar' ? 'rtl' : 'ltr'), 'direction follows the language');
+  await onb(page, t.go);
+  ok(await page.locator('#onb-name').count() === 1, 'who-are-you step shown');
+  await onb(page, t[who]);
+  await page.fill('#onb-name', name);
+  await onb(page, t.next); // goods
+  await onb(page, t.next); // what you already have
+  await page.locator('.onb .checkrow').first().click();
+  await onb(page, t.plan);
+  ok(await page.locator('.onb .steps li').count() >= 3, 'plan lists the remaining steps');
+  await onb(page, t.app);
+  await page.waitForTimeout(500);
+  const home = await page.locator('.screen[data-tab=home]').innerText();
+  ok(home.includes(name), 'home greets the business by name');
+  ok(home.includes(t.nextStep), 'home shows one clear next step');
+  ok(!(await overflowX(page)), 'no horizontal overflow on a phone');
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('app.state.v2')));
+  ok(saved.org.type === (who === 'sole' ? 'sole' : 'company') && saved.onboarded && saved.profile.some((p) => p.done), 'profile saved locally with the ticked requirement');
 
-if (errors.length) { failed++; console.log('ERRORS:\n' + errors.join('\n')); }
+  /* switch language from the top bar: direction, labels and stored data stay consistent */
+  await page.locator('.topbar button:has-text("' + (lang === 'ar' ? 'EN' : 'ع') + '")').click();
+  await page.waitForFunction((o) => document.documentElement.lang === o, lang === 'ar' ? 'en' : 'ar');
+  const other = lang === 'ar' ? 'en' : 'ar';
+  ok(await page.evaluate(() => document.documentElement.dir) === (other === 'ar' ? 'rtl' : 'ltr'), 'direction flips with the language');
+  ok((await page.locator('.screen[data-tab=home]').innerText()).includes(T[other].nextStep), 'screen text switches language');
+  ok((await page.evaluate(() => JSON.parse(localStorage.getItem('app.state.v2')).org.name)) === name, 'stored data is language-neutral');
+  await page.waitForTimeout(600); /* let the browser flush localStorage before a file:// reload */
+  await page.reload();
+  ok(await page.waitForFunction((o) => document.documentElement.lang === o && !!document.querySelector('.screen[data-tab=home]')?.innerText, other, { timeout: 8000 }).then(() => true, () => false), 'language choice persists across reload');
+  await ctx.close();
+}
+
+console.log('demo data · simplified shipment · tools');
+{
+  const { ctx, page } = await open('en');
+  await onb(page, T.en.demo);
+  await page.waitForTimeout(500);
+  await page.click('#tab-ships');
+  const cards = page.locator('.screen[data-tab=ships] .ship');
+  ok(await cards.count() >= 4, 'demo shipments listed');
+  await cards.first().click();
+  await page.waitForSelector('.page .page-body');
+  const txt = await page.locator('.page').innerText();
+  ok(/next|ACI|importer/i.test(txt), 'shipment page shows its next action');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(450);
+  ok(await page.locator('.page').count() === 0, 'Escape closes the page');
+
+  /* new shipment through the sheet */
+  await page.locator('.screen[data-tab=ships] button[aria-label="New shipment"]').click();
+  await page.fill('#ns-sup', 'Test Supplier Ltd');
+  await page.fill('#ns-usd', '90000');
+  await page.locator('.sheet button:has-text("Create shipment")').click();
+  await page.waitForSelector('.page .page-body');
+  ok((await page.evaluate(() => JSON.parse(localStorage.getItem('app.state.v2')).ships.some((s) => s.supplier.name === 'Test Supplier Ltd'))), 'new shipment saved');
+  await page.keyboard.press('Escape');
+
+  /* settings: brand preview and backup */
+  await page.click('#tab-more');
+  await page.locator(`.screen[data-tab=more] button:has-text("${T.en.settings}")`).click();
+  await page.selectOption('#brand-sel', 'sanad');
+  await page.waitForTimeout(300);
+  ok((await page.locator('#story').innerText()).includes('Sanad') || (await page.locator('.topbar').count()) === 0, 'brand preview applies');
+  ok((await page.evaluate(() => localStorage.getItem('app.brand'))) === 'sanad', 'brand choice remembered');
+  await page.selectOption('#brand-sel', 'darb');
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 5000 }), page.locator('.page button:has-text("Export")').click()]);
+  ok(/backup-.*\.json$/.test(dl.suggestedFilename()), 'backup file downloads');
+  await ctx.close();
+}
+
+console.log('desktop layout');
+{
+  const { ctx, page } = await open('ar', { width: 1280, height: 860 });
+  ok(await page.locator('#story').isVisible(), 'product story panel shown beside the device frame');
+  ok((await page.locator('#story h1').innerText()).length > 10, 'story panel is filled');
+  ok(!(await overflowX(page)), 'no horizontal overflow on desktop');
+  await ctx.close();
+}
+
+console.log(errors.length ? 'console errors:\n' + errors.join('\n') : 'no console errors');
+if (errors.length) failed++;
 await browser.close();
-console.log(failed ? `\n${failed} failure(s)` : '\nall passed');
+console.log(failed ? `\n${failed} problem(s)` : '\nall smoke checks passed');
 process.exit(failed ? 1 : 0);

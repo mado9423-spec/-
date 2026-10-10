@@ -44,8 +44,24 @@ const ICONS = {
   user: '<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/>',
   trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l.8 12.5h9.4L17.5 7"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  arrowR: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"/>',
+  help: '<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.2 1-1.2 1.8M12 17h.01"/>',
+  book: '<path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.2 6-5.2s6 1.9 6 5.2M16 5.2a3 3 0 0 1 0 5.6M18 14.2c1.8.6 3 2.1 3 4.8"/>',
+  building: '<path d="M5 21V4h9v17M14 9h5v12M8 8h3M8 12h3M8 16h3M3 21h18"/>',
+  store: '<path d="m4 9 1.5-5h13L20 9M4 9v11h16V9M4 9a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 5 0M10 20v-5h4v5"/>',
+  cloud: '<path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9.5 4.3 4.3 0 0 1 17 18z"/>',
+  phone: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/>',
+  logout: '<path d="M10 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M15 8l4 4-4 4M19 12H9"/>',
+  key: '<circle cx="8" cy="12" r="3.5"/><path d="M11.5 12H21M17 12v3M20 12v2"/>',
+  list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+  dots: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
 };
+/* direction-aware names: fwd points toward "next" (left in RTL), back points toward "previous" */
+const ICON_ALIAS = { fwd: () => (LANG === 'ar' ? 'chevL' : 'chevR'), back: () => (LANG === 'ar' ? 'arrowR' : 'arrowL') };
 function icon(name, cls = '') {
+  if (ICON_ALIAS[name]) name = ICON_ALIAS[name]();
   const el = document.createElement('span');
   el.className = 'ico' + (cls ? ' ' + cls : '');
   el.setAttribute('aria-hidden', 'true');

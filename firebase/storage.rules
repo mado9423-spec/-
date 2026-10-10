@@ -1,0 +1,21 @@
+rules_version = '2';
+
+// Files live at orgs/{orgId}/files/{folder}/{file}. Access follows the membership document in Firestore:
+// anyone in the business can read; owner, admin and member can add or remove; viewers are read-only.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isMember(orgId) {
+      return request.auth != null && firestore.exists(/databases/(default)/documents/orgs/$(orgId)/members/$(request.auth.uid));
+    }
+    function canWrite(orgId) {
+      return isMember(orgId) && firestore.get(/databases/(default)/documents/orgs/$(orgId)/members/$(request.auth.uid)).data.role in ['owner', 'admin', 'member'];
+    }
+    match /orgs/{orgId}/files/{folder}/{file} {
+      allow read: if isMember(orgId);
+      allow create, update: if canWrite(orgId)
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType.matches('(application/pdf|image/.*)');
+      allow delete: if canWrite(orgId);
+    }
+  }
+}

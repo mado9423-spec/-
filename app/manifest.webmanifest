@@ -1,7 +1,7 @@
 {
-  "name": "سَنَد · مسار الاستيراد",
-  "short_name": "سَنَد",
-  "description": "تطبيق مرافق للمستورد الليبي: رحلة واحدة من الاعتماد إلى الإفراج الجمركي عبر FCMS وACI وPTS.",
+  "name": "مَرفأ · مرفؤك الآمن للاستيراد",
+  "short_name": "مَرفأ",
+  "description": "تطبيق مرافق للمستورد في ليبيا: خطوة واضحة تلو الأخرى من الاعتماد إلى الإفراج الجمركي عبر FCMS وACI وPTS. بالعربية والإنجليزية.",
   "lang": "ar",
   "dir": "rtl",
   "start_url": "./",
@@ -11,12 +11,33 @@
   "background_color": "#070b14",
   "theme_color": "#070b14",
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "shortcuts": [
-    { "name": "الرحلات", "url": "./#ships" },
-    { "name": "الاعتمادات", "url": "./#lcs" }
+    {
+      "name": "رحلاتي",
+      "url": "./#ships"
+    },
+    {
+      "name": "التمويل",
+      "url": "./#fin"
+    }
   ]
 }
