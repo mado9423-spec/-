@@ -1,14 +1,16 @@
-/* ---------- brand (the name is not final: change BRAND_DEFAULT at build time, or preview in Settings) ---------- */
+/* ---------- brand: the name and tagline come from this table; the mark is the ship in 03-logo.js (it carries no text) ---------- */
 const BRANDS = {
-  marfa: { ar: 'مَرفأ', en: 'Marfa', mark: { ar: 'م', en: 'M' }, tag: { ar: 'مرفؤك الآمن للاستيراد', en: 'Your safe harbor for importing' } },
-  sanad: { ar: 'سَنَد', en: 'Sanad', mark: { ar: 'س', en: 'S' }, tag: { ar: 'مسار الاستيراد', en: 'Import companion' } },
-  darb: { ar: 'دَرب', en: 'Darb', mark: { ar: 'د', en: 'D' }, tag: { ar: 'طريقك الواضح للاستيراد', en: 'Your clear path to importing' } },
+  dalil: { ar: 'دليل', en: 'Dalil', tag: { ar: 'دليلك الواضح للاستيراد', en: 'Your clear guide to importing' } },
 };
-const BRAND_DEFAULT = /*BRAND_DEFAULT*/'marfa'/*END*/;
-const BRAND_KEY = 'app.brand';
-let BRAND_ID = BRAND_DEFAULT;
-try { const b = localStorage.getItem(BRAND_KEY); if (b && BRANDS[b]) BRAND_ID = b; } catch (e) { /* storage unavailable */ }
+const BRAND_ID = /*BRAND_DEFAULT*/'dalil'/*END*/;
 const B = () => L(BRANDS[BRAND_ID]);
-const brandMark = () => L(BRANDS[BRAND_ID].mark);
 const brandTag = () => L(BRANDS[BRAND_ID].tag);
-function setBrand(id) { if (!BRANDS[id]) return; BRAND_ID = id; try { localStorage.setItem(BRAND_KEY, id); } catch (e) { /* storage unavailable */ } document.title = `${B()} · ${brandTag()}`; }
+function brandMark() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', LOGO_VB); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', LOGO_D); path.setAttribute('fill', 'currentColor'); path.setAttribute('fill-rule', 'evenodd');
+  svg.append(path);
+  return svg;
+}

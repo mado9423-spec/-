@@ -44,8 +44,9 @@ function ring({ pct, size = 118, stroke = 10, track = 'rgba(255,255,255,.13)', c
   svg.setAttribute('width', size); svg.setAttribute('height', size); svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
   svg.innerHTML = `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>
     <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${track}" stroke-width="${stroke}"/>
-    <circle class="arc" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#${id})" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="0 ${C}" style="transition:stroke-dasharray 1.1s cubic-bezier(.2,.9,.25,1)"/>`;
+    <circle class="arc" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#${id})" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="0 ${C}"/>`;
   const arc = svg.querySelector('.arc');
+  arc.style.transition = 'stroke-dasharray 1.1s cubic-bezier(.2,.9,.25,1)'; /* via CSSOM: inline style attributes are blocked by the CSP */
   const target = `${Math.max(0.5, (clamp(pct, 0, 100) / 100) * C)} ${C}`;
   setTimeout(() => arc.setAttribute('stroke-dasharray', target), delay);
   return h('div', { class: 'ringbox', style: { width: size + 'px', height: size + 'px' } }, svg, mid ? h('div', { class: 'mid' }, mid) : null);
@@ -211,11 +212,6 @@ function setLanguage(l) {
   refreshStory();
   rerender();
 }
-function setBrandPreview(id) {
-  setBrand(id);
-  refreshStory();
-  rerender();
-}
 
 /* ---------- tabs + render ---------- */
 const SCREENS = {};
@@ -254,7 +250,7 @@ function rerender() {
   UI.pages.forEach(renderPage);
   if (UI.onb) UI.onb.render();
 }
-function commit(msg) { saveState(); rerender(); if (msg) toast(msg); }
+function commit(msg) { const saved = saveState(); rerender(); if (msg && saved !== false) toast(msg); }
 
 /* ---------- file picking: returns the File; the caller decides whether to upload it ---------- */
 function pickFile(cb) {

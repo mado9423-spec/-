@@ -62,11 +62,13 @@ function init() {
   });
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (!S.theme) rerender(); });
   window.addEventListener('online', () => { if (!Cloud.signedIn()) bootCloud(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && Cloud.active()) Cloud.flush().catch(() => { /* retried on the next change */ }); });
+  const flushNow = () => { if (Cloud.active() && !Cloud.readOnly()) Cloud.flush().catch(() => { /* retried on the next change */ }); };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushNow(); });
+  window.addEventListener('pagehide', flushNow);
 
   bootCloud();
 
-  if (!window.__SANAD_EMBED__ && 'serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+  if (!window.__EMBED__ && 'serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
     navigator.serviceWorker.register('sw.js').catch(() => { /* offline cache is optional */ });
   }
 }

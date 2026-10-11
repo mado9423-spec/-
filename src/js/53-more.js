@@ -113,7 +113,6 @@ function openSettings() {
     const langSegEl = h('div', { class: 'lang-seg' }, h('button', { type: 'button', class: LANG === 'ar' ? 'on' : '', onclick: () => setLanguage('ar') }, 'العربية'), h('button', { type: 'button', class: LANG === 'en' ? 'on' : '', onclick: () => setLanguage('en') }, 'English'));
     const themeSeg = h('div', { class: 'lang-seg' }, [[null, tr('تلقائي', 'Auto')], ['light', tr('فاتح', 'Light')], ['dark', tr('داكن', 'Dark')]].map(([v, label]) => h('button', { type: 'button', class: (S.theme || null) === v ? 'on' : '', onclick: () => { S.theme = v; applyTheme(v); saveState(); rerender(); } }, label)));
     const sw = (on, fn) => h('button', { class: 'chip' + (on ? ' on' : ''), type: 'button', role: 'switch', 'aria-checked': String(on), onclick: fn }, on ? tr('يعمل', 'On') : tr('متوقف', 'Off'));
-    const brandSel = h('select', { id: 'brand-sel', style: { height: '38px', borderRadius: '12px', background: 'var(--field)', border: '1px solid var(--line)', padding: '0 12px', color: 'inherit' }, onchange: (e) => setBrandPreview(e.target.value) }, Object.keys(BRANDS).map((k) => h('option', { value: k, selected: k === BRAND_ID }, `${BRANDS[k].ar} · ${BRANDS[k].en}`)));
     const sure = (label, fn) => h('button', { class: 'chip', type: 'button', onclick: (e) => {
       const b = e.currentTarget;
       if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = tr('اضغط للتأكيد', 'Tap to confirm'); b.classList.add('on'); setTimeout(() => { if (b.isConnected) { delete b.dataset.sure; b.textContent = label; b.classList.remove('on'); } }, 3000); return; }
@@ -133,7 +132,6 @@ function openSettings() {
           ]),
       accountCard(),
       h('div', { class: 'card col' }, h('div', { class: 'h3' }, tr('عن التطبيق', 'About')),
-        row(tr('معاينة الاسم', 'Name preview'), tr('الاسم لم يُحسم بعد. اختر لترى التطبيق به.', 'The name is not final. Pick one to see the app with it.'), brandSel),
         h('p', { class: 'lbl' }, tr('نموذج تجريبي. ليس جهة رسمية ولا يرتبط بأي بوابة حكومية. القواعد محدّثة حتى ', 'Prototype. Not an official body and not connected to any government portal. Rules current as of '), fmtDate(D(RULES_AS_OF)), '.')),
     ];
     return pageShell({ title: tr('الإعدادات', 'Settings'), body: h('div', { class: 'stack' }, parts) });

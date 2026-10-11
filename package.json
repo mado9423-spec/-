@@ -1,13 +1,22 @@
 {
-  "name": "sanad-import-companion",
+  "name": "dalil-import-companion",
   "version": "0.1.0",
   "private": true,
-  "description": "سَنَد: تطبيق مرافق للمستورد الليبي (نموذج تفاعلي تجريبي)",
+  "description": "دليل: تطبيق مرافق للمستورد الليبي (نموذج تفاعلي تجريبي)",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "serve": "npx --yes serve app -l 5173",
-    "test": "node scripts/build.mjs && node tests/smoke.mjs"
+    "test": "node scripts/build.mjs && node --test tests/logic.test.mjs && node tests/smoke.mjs",
+    "test:logic": "node --test tests/logic.test.mjs",
+    "test:crawl": "node tests/crawl.mjs",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-darb \"node --test firebase/tests/rules.test.mjs\"",
+    "test:e2e": "firebase emulators:exec --only auth,firestore,storage --project demo-darb \"node tests/e2e-firebase.mjs\"",
+    "test:functions": "node --test functions/test/reminders.test.js",
+    "test:all": "npm test && npm run test:functions && npm run test:rules && npm run test:e2e",
+    "emulators": "firebase emulators:start --only auth,firestore,storage",
+    "icons": "node scripts/make-icons.mjs",
+    "fonts": "node scripts/fetch-fonts.mjs"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^6.0.0",

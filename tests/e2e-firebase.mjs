@@ -3,12 +3,13 @@
 // (behind an HTTP proxy, unset HTTPS_PROXY first). It builds the app with --emulators, serves it locally,
 // serves the Firebase SDK from node_modules, and drives two browser contexts: an owner and an invited member.
 import { createServer } from 'node:http';
-import { readFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, mkdtempSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { buildCsp } from '../scripts/csp.mjs';
 
 let chromium;
 if (process.env.PW_ROOT) ({ chromium } = createRequire(process.env.PW_ROOT.replace(/\/?$/, '/'))('playwright'));
@@ -19,7 +20,16 @@ const tmp = mkdtempSync(join(tmpdir(), 'e2e-'));
 execFileSync('node', [join(root, 'scripts/build.mjs'), '--emulators', '--out', join(tmp, 'index.html')], { stdio: 'inherit' });
 const html = readFileSync(join(tmp, 'index.html'));
 const PORT = 5199, ORIGIN = `http://127.0.0.1:${PORT}`;
-const server = createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html); }).listen(PORT, '127.0.0.1');
+const TYPES = { html: 'text/html; charset=utf-8', js: 'text/javascript' };
+/* serve the build exactly as a host would: same files, same Content-Security-Policy (the self-hosted SDK comes from ./vendor) */
+const server = createServer((req, res) => {
+  const path = new URL(req.url, ORIGIN).pathname.replace(/^\/+/, '') || 'index.html';
+  const file = join(tmp, path);
+  if (!file.startsWith(tmp) || !existsSync(file)) { res.writeHead(404); return res.end(); }
+  const headers = { 'content-type': TYPES[path.split('.').pop()] || 'application/octet-stream' };
+  if (path === 'index.html') headers['content-security-policy'] = buildCsp(html.toString('utf8'), { firebase: true, emulators: true });
+  res.writeHead(200, headers); res.end(readFileSync(file));
+}).listen(PORT, '127.0.0.1');
 
 const FS = 'http://127.0.0.1:8080/v1/projects/demo-darb/databases/(default)/documents';
 const fsGet = async (path) => { const r = await fetch(`${FS}/${path}`, { headers: { Authorization: 'Bearer owner' } }); return r.ok ? r.json() : null; };
@@ -34,13 +44,35 @@ const errors = [];
 async function newPage(name) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'en', serviceWorkers: 'block' });
   await ctx.addInitScript(() => { if (!localStorage.getItem('app.lang')) localStorage.setItem('app.lang', 'en'); });
+  if (process.env.DEBUG_E2E) await ctx.addInitScript(() => { const rm = Storage.prototype.removeItem; Storage.prototype.removeItem = function (k) { if (k === 'app.emailForLink') console.warn('REMOVE emailForLink ' + new Error().stack); return rm.call(this, k); }; const st = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { if (k === 'app.emailForLink') console.warn('SET emailForLink'); return st.call(this, k, v); }; });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name} pageerror: ${e.message}`));
   page.on('console', (m) => { if (process.env.DEBUG_E2E && m.type() !== 'log') console.log(`   [${name} ${m.type()}]`, m.text().slice(0, 300)); if (m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text())) errors.push(`${name} console: ${m.text()}`); });
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
-  await page.route(/gstatic\.com\/firebasejs\/.*\/(firebase-[a-z]+-compat\.js)/, (r) => { const f = r.request().url().split('/').pop(); r.fulfill({ contentType: 'application/javascript', body: readFileSync(join(root, 'node_modules/firebase', f)) }); });
-  await page.route(ORIGIN + '/**', (r) => (new URL(r.request().url()).pathname === '/' ? r.fallback() : r.fulfill({ status: 204, body: '' })));
+  await page.addInitScript(() => { window.__csp = []; document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`)); });
+  page.csp = () => page.evaluate(() => window.__csp);
   return { ctx, page };
+}
+
+/* a guest signs in with an emulator email link; the page is left at the invitation sheet */
+async function signInWithEmailLink(page, email) {
+  await page.goto(ORIGIN + '/');
+  await page.locator('.onb button:has-text("Explore with demo data")').click();
+  await page.click('#tab-more');
+  await page.locator('.screen[data-tab=more] button:has-text("Settings")').click();
+  await page.locator('.page button:has-text("Email")').waitFor({ timeout: 8000 });
+  await page.locator('.page button:has-text("Email")').click();
+  await page.fill('#si-email', email);
+  await page.locator('.sheet button:has-text("Send the link")').click();
+  await page.locator('.sheet .note:has-text("Link sent")').waitFor({ timeout: 8000 }); /* the page has stored the address once this shows: navigating earlier races it */
+  const code = await until(async () => {
+    const j = await (await fetch('http://127.0.0.1:9099/emulator/v1/projects/demo-darb/oobCodes')).json();
+    const hit = (j.oobCodes || []).filter((o) => o.email === email && o.requestType === 'EMAIL_SIGNIN').pop();
+    return hit && hit.oobCode;
+  }, 6000, 'email link issued');
+  await page.goto(`${ORIGIN}/?apiKey=demo-key&oobCode=${code}&mode=signIn&lang=en`);
+  const sheet = page.locator('.sheet-wrap').filter({ hasText: 'Accept the invitation' });
+  await sheet.waitFor({ timeout: 12000 });
+  return sheet;
 }
 
 try {
@@ -97,23 +129,7 @@ try {
   console.log('invitee');
   const B = await newPage('invitee');
   const b = B.page;
-  await b.goto(ORIGIN + '/');
-  await b.locator('.onb button:has-text("Explore with demo data")').click();
-  await b.click('#tab-more');
-  await b.locator('.screen[data-tab=more] button:has-text("Settings")').click();
-  await b.locator('.page button:has-text("Email")').waitFor({ timeout: 8000 });
-  await b.locator('.page button:has-text("Email")').click();
-  await b.fill('#si-email', 'new.person@example.com');
-  await b.locator('.sheet button:has-text("Send the link")').click();
-  const code = await until(async () => {
-    const r = await fetch('http://127.0.0.1:9099/emulator/v1/projects/demo-darb/oobCodes');
-    const j = await r.json();
-    const hit = (j.oobCodes || []).filter((o) => o.email === 'new.person@example.com' && o.requestType === 'EMAIL_SIGNIN').pop();
-    return hit && hit.oobCode;
-  }, 6000, 'email link issued');
-  await b.goto(`${ORIGIN}/?apiKey=demo-key&oobCode=${code}&mode=signIn&lang=en`);
-  const sheet = b.locator('.sheet-wrap').filter({ hasText: 'Accept the invitation' });
-  await sheet.waitFor({ timeout: 12000 });
+  const sheet = await signInWithEmailLink(b, 'new.person@example.com');
   ok((await sheet.innerText()).includes('E2E Foods'), 'invitation names the business');
   await sheet.locator('button:has-text("Accept the invitation")').click();
   await b.waitForSelector('.screen[data-tab=home] >> text=E2E Foods', { timeout: 12000 });
@@ -132,11 +148,37 @@ try {
   ok(true, 'member write reached Firestore');
   await a.keyboard.press('Escape'); await a.click('#tab-ships'); /* the owner is looking at the shipment list: the listener repaints it without a reload */
   await until(async () => (await a.locator('.screen[data-tab=ships]').innerText()).includes('Realtime Supplier'), 8000, 'owner screen updated live').then(() => ok(true, 'owner list updated in real time')).catch(() => ok(false, 'owner list updated in real time'));
+
+  /* ---------- a viewer can read but never write ---------- */
+  console.log('viewer');
+  await a.keyboard.press('Escape'); await a.click('#tab-more');
+  await a.locator('.screen[data-tab=more] button:has-text("Settings")').click();
+  await a.locator('.page button:has-text("Invite someone")').click();
+  await a.fill('#inv-key', 'viewer@example.com');
+  await a.locator('.sheet .checkrow:has-text("Viewer")').click();
+  await a.locator('.sheet button:has-text("Create the invitation")').click();
+  await until(async () => (await fsGet(`orgs/${orgId}/invites/viewer@example.com`)), 6000, 'viewer invite created');
+  const C = await newPage('viewer');
+  const c = C.page;
+  const vsheet = await signInWithEmailLink(c, 'viewer@example.com');
+  await vsheet.locator('button:has-text("Accept the invitation")').click();
+  await c.waitForSelector('.screen[data-tab=home] >> text=E2E Foods', { timeout: 12000 });
+  await c.click('#tab-ships');
+  await c.locator('.screen[data-tab=ships] button[aria-label="New shipment"]').click();
+  await c.fill('#ns-sup', 'Viewer Should Not Write');
+  await c.fill('#ns-usd', '1000');
+  await c.locator('.sheet button:has-text("Create shipment")').click();
+  await c.locator('#toast:has-text("viewer")').waitFor({ timeout: 8000 }).then(() => ok(true, 'the viewer is told editing is not allowed'), () => ok(false, 'the viewer is told editing is not allowed'));
+  await c.waitForTimeout(1500);
+  ok((await fsGet(`orgs/${orgId}/shipments`)).documents.length === 2, 'nothing a viewer does reaches Firestore');
+  await c.keyboard.press('Escape');
+  ok(!(await c.locator('.screen[data-tab=ships]').innerText()).includes('Viewer Should Not Write'), 'the viewer\'s local edit is rolled back to the cloud copy');
 } catch (e) {
   failed++;
   console.log('ERROR', e.message);
   if (process.env.DEBUG_E2E) for (const pg of browser.contexts().flatMap((c) => c.pages())) await pg.screenshot({ path: join(tmp, `fail-${Math.random().toString(36).slice(2, 6)}.png`) }).then(() => console.log('screenshots in', tmp));
 }
+for (const pg of browser.contexts().flatMap((c) => c.pages())) { const v = await pg.csp().catch(() => []); ok(v.length === 0, 'no Content-Security-Policy violations' + (v.length ? ': ' + v.join(' | ') : '')); }
 console.log(errors.length ? 'console errors:\n' + errors.join('\n') : 'no console errors');
 if (errors.length) failed++;
 await browser.close();

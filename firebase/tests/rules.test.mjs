@@ -27,7 +27,7 @@ const ctx = {
   none: () => env.unauthenticatedContext(),
 };
 const db = (c) => c.firestore();
-const orgBody = (uid) => ({ name: 'Al-Nour Foods', type: 'company', stat: '', ptsCode: '', goods: 'food', valueBand: 'mid', resell: true, requirements: { pts: { done: false, note: '' } }, tax: { income: 0, payroll: 0 }, bankSel: 0, simple: true, schema: 2, createdBy: uid, createdAt: TS(), updatedAt: TS() });
+const orgBody = (uid) => ({ name: 'Al-Nour Foods', type: 'company', stat: '', ptsCode: '', goods: 'food', valueBand: 'mid', resell: true, requirements: { pts: { done: false, note: '' } }, tax: { income: 0, payroll: 0 }, schema: 2, createdBy: uid, createdAt: TS(), updatedAt: TS() });
 const memberBody = (role, extra) => ({ role, joinedAt: TS(), displayName: null, email: null, phone: null, ...extra });
 const ship = (uid) => ({ id: 's1', title: 'x', updatedAt: TS(), updatedBy: uid });
 
@@ -173,6 +173,29 @@ test('invites: accepting creates the membership with exactly the invited role', 
   await assertSucceeds(acceptBatch('invitee', 'invitee', 'viewer'));
   await assertSucceeds(db(ctx.invitee()).doc(`orgs/${ORG}/shipments/s0`).get());
   await assertFails(db(ctx.invitee()).doc(`orgs/${ORG}/shipments/s9`).set({ ...ship('invitee'), id: 's9' }));
+});
+test('invites: single-use. A membership cannot be created without consuming the invitation', async () => {
+  await seedOrg();
+  await env.withSecurityRulesDisabled((c) => c.firestore().doc(`orgs/${ORG}/invites/new.person@example.com`).set({ ...invite('new.person@example.com', 'member'), createdAt: new Date() }));
+  const f = db(ctx.invitee());
+  await assertFails(f.doc(`orgs/${ORG}/members/invitee`).set(memberBody('member'))); // membership alone: the invite stays pending
+  await assertSucceeds(acceptBatch('invitee', 'invitee', 'member'));
+  await assertSucceeds(db(ctx.owner()).doc(`orgs/${ORG}/members/invitee`).delete()); // removed by the owner
+  await assertFails(acceptBatch('invitee', 'invitee', 'member')); // the consumed invitation cannot bring them back
+  await assertFails(f.doc(`orgs/${ORG}/members/invitee`).set(memberBody('member')));
+});
+test('data: oversized documents are refused', async () => {
+  await seedOrg();
+  const big = Object.fromEntries(Array.from({ length: 90 }, (_, i) => [`k${i}`, i]));
+  await assertFails(db(ctx.member()).doc(`orgs/${ORG}/shipments/s1`).set({ ...ship('member'), ...big }));
+});
+test('org: field types are validated', async () => {
+  await seedOrg();
+  const f = db(ctx.owner());
+  await assertFails(f.doc(`orgs/${ORG}`).update({ resell: 'yes', updatedAt: TS() }));
+  await assertFails(f.doc(`orgs/${ORG}`).update({ stat: 'x'.repeat(41), updatedAt: TS() }));
+  await assertFails(f.doc(`orgs/${ORG}`).update({ simple: true, updatedAt: TS() })); // personal preferences are not synced
+  await assertSucceeds(f.doc(`orgs/${ORG}`).update({ stat: 'LY-1', resell: false, updatedAt: TS() }));
 });
 test('invites: an expired or already used invitation cannot be accepted', async () => {
   await seedOrg();

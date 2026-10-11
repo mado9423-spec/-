@@ -14,10 +14,13 @@ const LC_DAYS = [7, 3, 0];
 const inDaysAr = (n) => (n === 0 ? 'اليوم' : n === 1 ? 'غدًا' : `بعد ${n} أيام`);
 const inDaysEn = (n) => (n === 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n} days`);
 
-const DOC_NAMES = {
+const DOC_NAMES = { /* keys are the app's company-document types (src/js/30-domain.js COMPANY_DOC_TYPES) */
   license: { ar: 'رخصة النشاط', en: 'Business license' },
   tax: { ar: 'شهادة الضرائب', en: 'Tax certificate' },
-  social: { ar: 'شهادة الضمان الاجتماعي', en: 'Social security certificate' },
+  ss: { ar: 'شهادة الضمان الاجتماعي', en: 'Social security certificate' },
+  pts: { ar: 'شهادة تسجيل PTS', en: 'PTS registration certificate' },
+  aci: { ar: 'إثبات تسجيل ACI', en: 'ACI registration proof' },
+  cblkey: { ar: 'خطاب مفتاح المركزي وIBAN', en: 'CBL Key and IBAN letter' },
 };
 const docName = (t) => DOC_NAMES[t] || { ar: 'مستند الشركة', en: 'Business document' };
 

@@ -4,26 +4,45 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:http';
+import { readFileSync, existsSync } from 'node:fs';
+import { buildCsp } from '../scripts/csp.mjs';
 
 let chromium;
 if (process.env.PW_ROOT) ({ chromium } = createRequire(process.env.PW_ROOT.replace(/\/?$/, '/'))('playwright'));
 else ({ chromium } = await import('playwright'));
 
-const url = 'file://' + join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'index.html');
+const appDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'app');
+const TYPES = { html: 'text/html; charset=utf-8', svg: 'image/svg+xml', png: 'image/png', webmanifest: 'application/manifest+json', js: 'text/javascript', woff2: 'font/woff2', txt: 'text/plain' };
+const server = createServer((req, res) => {
+  const path = new URL(req.url, 'http://x').pathname.replace(/^\/+/, '') || 'index.html';
+  const file = join(appDir, path);
+  if (!file.startsWith(appDir) || !existsSync(file)) { res.writeHead(404); return res.end(); }
+  const body = readFileSync(file);
+  const headers = { 'content-type': TYPES[path.split('.').pop()] || 'application/octet-stream' };
+  if (path === 'index.html') headers['content-security-policy'] = buildCsp(body.toString('utf8')); // the same policy the host will send
+  res.writeHead(200, headers);
+  res.end(body);
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const url = `http://127.0.0.1:${server.address().port}/`;
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
 const errors = [];
 let failed = 0;
 const ok = (cond, msg) => { if (cond) console.log('  ok  ', msg); else { failed++; console.log('  FAIL', msg); } };
 
 async function open(lang, viewport = { width: 390, height: 844 }) {
-  const ctx = await browser.newContext({ viewport, locale: lang, acceptDownloads: true });
+  const ctx = await browser.newContext({ viewport, locale: lang, acceptDownloads: true, serviceWorkers: 'block' });
   await ctx.addInitScript((l) => { if (!localStorage.getItem('app.lang')) localStorage.setItem('app.lang', l); }, lang);
   const page = await ctx.newPage();
+  await page.addInitScript(() => { window.__csp = []; document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`)); });
   page.on('pageerror', (e) => errors.push(`${lang} pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text())) errors.push(`${lang} console: ${m.text()}`); });
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   await page.goto(url);
   await page.waitForTimeout(500);
+  page.cspViolations = () => page.evaluate(() => window.__csp);
+  page.outside = [];
+  page.on('request', (r) => { const u = r.url(); if (!u.startsWith(url) && !/^(data|blob):/.test(u)) page.outside.push(u); });
   return { ctx, page };
 }
 const T = {
@@ -63,9 +82,10 @@ for (const [lang, who, name] of [['ar', 'company', 'شركة النور للمو
   ok(await page.evaluate(() => document.documentElement.dir) === (other === 'ar' ? 'rtl' : 'ltr'), 'direction flips with the language');
   ok((await page.locator('.screen[data-tab=home]').innerText()).includes(T[other].nextStep), 'screen text switches language');
   ok((await page.evaluate(() => JSON.parse(localStorage.getItem('app.state.v2')).org.name)) === name, 'stored data is language-neutral');
-  await page.waitForTimeout(600); /* let the browser flush localStorage before a file:// reload */
   await page.reload();
   ok(await page.waitForFunction((o) => document.documentElement.lang === o && !!document.querySelector('.screen[data-tab=home]')?.innerText, other, { timeout: 8000 }).then(() => true, () => false), 'language choice persists across reload');
+  ok(page.outside.length === 0, 'every request stays on the app\'s own origin (no analytics, CDN or font host)' + (page.outside.length ? ': ' + page.outside.join(' ') : ''));
+  ok((await page.cspViolations()).length === 0, 'no Content-Security-Policy violations' + ((await page.cspViolations()).length ? ': ' + (await page.cspViolations()).join(' | ') : ''));
   await ctx.close();
 }
 
@@ -94,16 +114,42 @@ console.log('demo data · simplified shipment · tools');
   ok((await page.evaluate(() => JSON.parse(localStorage.getItem('app.state.v2')).ships.some((s) => s.supplier.name === 'Test Supplier Ltd'))), 'new shipment saved');
   await page.keyboard.press('Escape');
 
-  /* settings: brand preview and backup */
+  /* brand: the ship mark (no text inside it) beside the name; backup export */
+  ok(await page.locator('.topbar .logo-mark svg path').count() === 1, 'ship mark shown as an SVG in the top bar');
+  ok((await page.locator('.topbar .logo').innerText()).includes('Dalil'), 'name shown beside the mark');
   await page.click('#tab-more');
   await page.locator(`.screen[data-tab=more] button:has-text("${T.en.settings}")`).click();
-  await page.selectOption('#brand-sel', 'sanad');
-  await page.waitForTimeout(300);
-  ok((await page.locator('#story').innerText()).includes('Sanad') || (await page.locator('.topbar').count()) === 0, 'brand preview applies');
-  ok((await page.evaluate(() => localStorage.getItem('app.brand'))) === 'sanad', 'brand choice remembered');
-  await page.selectOption('#brand-sel', 'darb');
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 5000 }), page.locator('.page button:has-text("Export")').click()]);
   ok(/backup-.*\.json$/.test(dl.suggestedFilename()), 'backup file downloads');
+  ok(page.outside.length === 0, 'every request stays on the app\'s own origin (no analytics, CDN or font host)' + (page.outside.length ? ': ' + page.outside.join(' ') : ''));
+  ok((await page.cspViolations()).length === 0, 'no Content-Security-Policy violations' + ((await page.cspViolations()).length ? ': ' + (await page.cspViolations()).join(' | ') : ''));
+  await ctx.close();
+}
+
+console.log('security guards in the browser');
+{
+  const { ctx, page } = await open('en');
+  await page.evaluate(() => { const s = document.createElement('script'); s.textContent = 'window.__pwned = 1'; document.body.append(s); });
+  ok(await page.evaluate(() => window.__pwned) === undefined, 'an injected inline script does not run (the CSP is enforced)');
+  ok((await page.cspViolations()).some((v) => v.startsWith('script-src')), 'the blocked script is reported as a violation');
+  for (let i = errors.length - 1; i >= 0; i--) if (/Refused to execute inline script/.test(errors[i])) errors.splice(i, 1); // the one console error we provoked on purpose
+  await onb(page, T.en.demo);
+  await page.waitForTimeout(400);
+  /* hostile text in stored data must stay text */
+  const XSS = '<img src=x onerror="window.__xss=1"><b>bold</b>';
+  await page.evaluate((x) => { const st = JSON.parse(localStorage.getItem('app.state.v2')); st.ships[0].supplier.name = x; st.ships[0].title = x; st.org.name = x; localStorage.setItem('app.state.v2', JSON.stringify(st)); }, XSS);
+  await page.reload();
+  await page.waitForSelector('.screen[data-tab=home]:not(:empty)');
+  await page.click('#tab-ships');
+  await page.waitForTimeout(400);
+  ok(await page.evaluate(() => window.__xss) === undefined, 'markup inside stored names does not execute');
+  ok(await page.locator('img[src="x"]').count() === 0 && (await page.locator('.screen[data-tab=ships]').innerText()).includes('<img'), 'it is shown as literal text');
+  /* unreadable storage is kept aside, not overwritten */
+  await page.evaluate(() => localStorage.setItem('app.state.v2', '{broken'));
+  await page.reload();
+  await page.waitForSelector('.onb');
+  ok(await page.evaluate(() => localStorage.getItem('app.state.v2.unreadable')) === '{broken', 'unreadable data is copied to a side key before anything is saved');
+  ok((await page.cspViolations()).filter((v) => !v.startsWith('script-src')).length === 0, 'no other violations');
   await ctx.close();
 }
 
@@ -113,11 +159,14 @@ console.log('desktop layout');
   ok(await page.locator('#story').isVisible(), 'product story panel shown beside the device frame');
   ok((await page.locator('#story h1').innerText()).length > 10, 'story panel is filled');
   ok(!(await overflowX(page)), 'no horizontal overflow on desktop');
+  ok(page.outside.length === 0, 'every request stays on the app\'s own origin (no analytics, CDN or font host)' + (page.outside.length ? ': ' + page.outside.join(' ') : ''));
+  ok((await page.cspViolations()).length === 0, 'no Content-Security-Policy violations' + ((await page.cspViolations()).length ? ': ' + (await page.cspViolations()).join(' | ') : ''));
   await ctx.close();
 }
 
 console.log(errors.length ? 'console errors:\n' + errors.join('\n') : 'no console errors');
 if (errors.length) failed++;
 await browser.close();
+server.close();
 console.log(failed ? `\n${failed} problem(s)` : '\nall smoke checks passed');
 process.exit(failed ? 1 : 0);

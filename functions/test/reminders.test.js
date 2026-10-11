@@ -26,6 +26,13 @@ test('credit due date = open + days, only for issued credits', () => {
   const r = computeReminders({ credits: [lc('1', 'issued', 3), lc('2', 'issued', 5), lc('3', 'closed', 3), lc('4', 'draft', 3), lc('5', 'issued', 0)] }, TODAY);
   assert.deepEqual(r.map((x) => x.key), ['lc:5:0', 'lc:1:3']);
 });
+test('every company-document type the app can store has a name in the digest', () => {
+  for (const type of ['license', 'tax', 'ss', 'pts', 'aci', 'cblkey']) {
+    const r = computeReminders({ documents: [{ id: 'd', type, exp: addDays(TODAY, 7) }] }, TODAY);
+    assert.equal(r.length, 1);
+    assert.ok(!/مستند الشركة|Business document/.test(r[0].ar + r[0].en), type);
+  }
+});
 test('results are ordered by urgency; digest is null when nothing is due', () => {
   const r = computeReminders({ documents: [{ id: 'a', type: 'tax', exp: addDays(TODAY, 30) }, { id: 'b', type: 'license', exp: addDays(TODAY, 0) }] }, TODAY);
   assert.deepEqual(r.map((x) => x.left), [0, 30]);

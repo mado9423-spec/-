@@ -28,6 +28,14 @@ function append(el, kids) {
     el.append(k.nodeType ? k : document.createTextNode(bidi(k)));
   }
 }
+/* URLs that reach an attribute must be http(s), mailto, tel, blob or relative: never javascript:, data: or vbscript: */
+const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'poster', 'xlink:href']);
+function safeUrl(v) {
+  const t = String(v).replace(/[\u0000-\u0020\u007f-\u009f]+/g, '');
+  return !/^[a-z][a-z0-9+.-]*:/i.test(t) || /^(?:https?|mailto|tel|blob):/i.test(t);
+}
+/* h(tag, attrs, ...kids): builds an element. Kids become text nodes (never markup); there is deliberately no innerHTML path,
+   an on* attribute must be a function (a string would become an inline handler), and URL attributes are checked. */
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   if (attrs) {
@@ -35,12 +43,14 @@ function h(tag, attrs, ...kids) {
       const v = attrs[k];
       if (v == null || v === false) continue;
       if (k === 'class') el.className = v;
-      else if (k === 'html') el.innerHTML = v;
       else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
-      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k.startsWith('on')) { if (typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v); }
+      else if (URL_ATTRS.has(k)) { if (safeUrl(v)) el.setAttribute(k, v); }
+      else if (k === 'style' || k === 'srcdoc') continue;
       else if (v === true) el.setAttribute(k, '');
       else el.setAttribute(k, v);
     }
+    if (el.getAttribute('target') === '_blank') el.setAttribute('rel', 'noopener noreferrer');
   }
   append(el, kids);
   return el;

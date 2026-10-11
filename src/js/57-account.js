@@ -123,23 +123,37 @@ function openInviteSheet(done) {
 }
 
 /* ---------- backup (works without any cloud) ---------- */
-function exportBackup() {
-  const blob = new Blob([JSON.stringify({ app: 'importer-companion', exportedAt: new Date().toISOString(), data: S }, null, 2)], { type: 'application/json' });
-  const a = h('a', { href: URL.createObjectURL(blob), download: `${BRAND_ID}-backup-${new Date().toISOString().slice(0, 10)}.json` });
+function downloadJson(obj, name) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const a = h('a', { href: URL.createObjectURL(blob), download: name });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
+const backupName = (tag) => `${BRAND_ID}-${tag}-${new Date().toISOString().slice(0, 10)}.json`;
+function exportBackup() { downloadJson({ app: 'importer-companion', exportedAt: new Date().toISOString(), data: S }, backupName('backup')); }
+/* a copy kept aside when the cloud replaced this device's unsynced edits, or when stored data could not be read */
+function exportStash(why) {
+  const raw = readStash(why);
+  let data = null;
+  try { data = JSON.parse(raw); } catch (e) { /* hand over the raw text below */ }
+  if (data) downloadJson({ app: 'importer-companion', exportedAt: new Date().toISOString(), data }, backupName(why));
+  else { const blob = new Blob([raw || ''], { type: 'text/plain' }); const a = h('a', { href: URL.createObjectURL(blob), download: backupName(why).replace('.json', '.txt') }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+}
 function importBackup() {
+  if (Cloud.orgId() && Cloud.role() === 'viewer') return toast(tr('أنت مشاهد ولا تملك صلاحية الاسترجاع', 'You are a viewer and cannot restore'));
   const inp = h('input', { type: 'file', accept: '.json,application/json', style: { display: 'none' } });
   inp.addEventListener('change', async () => {
     const f = inp.files && inp.files[0]; inp.remove();
     if (!f) return;
     try {
+      if (f.size > 5e6) throw new Error('size');
       const o = JSON.parse(await f.text());
-      const d = o && o.data;
-      if (!d || d.v !== DATA_VERSION || !Array.isArray(d.ships) || !Array.isArray(d.lcs)) throw new Error('shape');
-      S = { ...emptyState(), ...d, mode: d.mode === 'demo' ? 'demo' : 'live', onboarded: true };
-      saveState(); closeAllPages(); rerender(); toast(tr('تم استرجاع النسخة', 'Backup restored'));
+      const res = normalizeState(o && o.data);
+      if (!res.state) throw new Error('shape');
+      if (Cloud.orgId() && res.state.mode === 'demo') return toast(tr('لا يمكن استرجاع نسخة تجريبية داخل نشاطك الفعلي', 'A demo backup cannot be restored into your own business'));
+      S = { ...res.state, onboarded: true };
+      saveState(); closeAllPages(); rerender();
+      toast(res.dropped ? tr(`تم الاسترجاع. تخطينا ${res.dropped} سجلًا غير صالح.`, `Restored. ${res.dropped} invalid record(s) were skipped.`) : tr('تم استرجاع النسخة', 'Backup restored'));
     } catch (e) { toast(tr('الملف ليس نسخة احتياطية صالحة', 'That file is not a valid backup')); }
   });
   document.body.append(inp); inp.click();
@@ -149,8 +163,19 @@ function importBackup() {
 function accountCard() {
   const row = (title, sub, ctl) => h('div', { class: 'setrow' }, h('div', { class: 'col' }, h('b', { style: { font: '500 .92rem var(--f-body)' } }, title), sub ? h('span', { class: 'lbl' }, sub) : null), ctl);
   const card = h('div', { class: 'card col' }, h('div', { class: 'h3' }, tr('الحساب والفريق', 'Account and team')));
-  const backup = row(tr('نسخة احتياطية', 'Backup'), tr('احفظ بياناتك في ملف أو استرجعها منه.', 'Save your data to a file, or restore from one.'),
-    h('div', { class: 'row' }, h('button', { class: 'chip', type: 'button', onclick: exportBackup }, tr('تصدير', 'Export')), h('button', { class: 'chip', type: 'button', onclick: importBackup }, tr('استرجاع', 'Restore'))));
+  const STASH_INFO = {
+    unsynced: [tr('تغييرات لم تُزامَن', 'Unsynced changes'), tr('نسخة من تغييرات هذا الجهاز قبل أن تحلّ بيانات السحابة محلها.', 'A copy of this device’s edits from before the cloud data replaced them.')],
+    unreadable: [tr('بيانات محلية غير مقروءة', 'Unreadable local data'), tr('نسخة من بيانات تعذّرت قراءتها، محفوظة لإمكان إنقاذها.', 'A copy of stored data that could not be read, kept so it can be rescued.')],
+    repaired: [tr('نسخة قبل الإصلاح', 'Copy before repair'), tr('أُسقطت سجلات غير صالحة عند التحميل، وهذه النسخة الأصلية.', 'Some invalid records were dropped on load; this is the original.')],
+  };
+  const stashRows = () => STASH_SUFFIXES.filter(hasStash).map((why) => row(STASH_INFO[why][0], STASH_INFO[why][1], h('button', { class: 'chip', type: 'button', onclick: () => exportStash(why) }, tr('تصدير', 'Export'))));
+  const backup = [row(tr('نسخة احتياطية', 'Backup'), tr('احفظ بياناتك في ملف أو استرجعها منه.', 'Save your data to a file, or restore from one.'),
+    h('div', { class: 'row' }, h('button', { class: 'chip', type: 'button', onclick: exportBackup }, tr('تصدير', 'Export')), h('button', { class: 'chip', type: 'button', onclick: (e) => {
+      const b = e.currentTarget;
+      if (Cloud.orgId() && !b.dataset.sure) { b.dataset.sure = '1'; b.textContent = tr('سيستبدل بيانات الفريق. اضغط للتأكيد', 'Replaces the team data. Tap to confirm'); b.classList.add('on'); setTimeout(() => { if (b.isConnected) { delete b.dataset.sure; b.textContent = tr('استرجاع', 'Restore'); b.classList.remove('on'); } }, 4000); return; }
+      importBackup();
+    } }, tr('استرجاع', 'Restore'))))];
+  backup.push(...stashRows());
 
   if (!Cloud.available()) {
     card.append(row(tr('الحفظ على هذا الجهاز', 'Saved on this device'), tr('الحفظ السحابي ومشاركة الفريق غير مفعّلين في هذه النسخة.', 'Cloud saving and team sharing are not enabled in this build.'), pill(tr('محلي', 'Local'), 'idle')), backup);

@@ -1,0 +1,3 @@
+Readex Pro, IBM Plex Sans Arabic and IBM Plex Mono are licensed under the SIL Open Font License, Version 1.1
+(https://openfontlicense.org). Arabic and Latin subsets, served from this origin so the app makes no request to Google fonts.
+Sources: https://fonts.google.com/specimen/Readex+Pro, https://fonts.google.com/specimen/IBM+Plex+Sans+Arabic, https://fonts.google.com/specimen/IBM+Plex+Mono

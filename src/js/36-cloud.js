@@ -3,7 +3,7 @@
    The in-memory model S stays the app's single source of truth; this layer mirrors it to Firestore with a per-document
    diff, listens for remote changes, and uploads files to Storage. Demo mode never touches the cloud. */
 const Cloud = (() => {
-  const st = { on: false, db: null, auth: null, storage: null, user: null, orgId: null, role: null, unsubs: [], last: null, timer: null, rtimer: null, ready: false };
+  const st = { on: false, db: null, auth: null, storage: null, user: null, orgId: null, role: null, unsubs: [], last: null, timer: null, rtimer: null, ready: false, seen: {}, fails: 0, persist: false, again: false };
   const cfg = () => (typeof window !== 'undefined' && window.FIREBASE_CONFIG) || null;
   const COLL = { ships: 'shipments', lcs: 'credits', companyDocs: 'documents', activity: 'activity' };
   const KEYF = { ships: 'id', lcs: 'no', companyDocs: 'id', activity: 'id' };
@@ -17,7 +17,7 @@ const Cloud = (() => {
     return clean({
       name: S.org.name, type: S.org.type || 'company', stat: S.org.stat || '', ptsCode: S.org.ptsCode || '', goods: S.org.goods || 'other', valueBand: S.org.valueBand || '', resell: S.org.resell !== false,
       requirements: Object.fromEntries(S.profile.map((p) => [p.id, { done: !!p.done, note: p.note || '' }])),
-      tax: { income: num(S.tax.income), payroll: num(S.tax.payroll) }, bankSel: S.bankSel || 0, simple: !!S.simple, schema: DATA_VERSION,
+      tax: { income: num(S.tax.income), payroll: num(S.tax.payroll) }, schema: DATA_VERSION,
     });
   }
   function snapshot() {
@@ -40,25 +40,61 @@ const Cloud = (() => {
     for (let i = 0; i < ops.length; i += 400) { const b = st.db.batch(); ops.slice(i, i + 400).forEach((f) => f(b)); await b.commit(); }
     st.last = now;
   }
-  function queue() { clearTimeout(st.timer); st.timer = setTimeout(() => { flush().catch((e) => console.warn('sync failed', e)); }, 700); }
+  /* a sync is queued 700 ms after the last change; 'app.dirty' marks edits that have not reached the server yet */
+  function queue() {
+    clearTimeout(st.timer);
+    st.again = true;
+    try { localStorage.setItem('app.dirty', '1'); } catch (e) { /* storage unavailable */ }
+    st.timer = setTimeout(run, 700);
+  }
+  async function run() {
+    st.again = false;
+    try {
+      await flush();
+      st.fails = 0;
+      if (!st.again) { try { localStorage.removeItem('app.dirty'); } catch (e) { /* storage unavailable */ } }
+    } catch (e) {
+      if (e && e.code === 'permission-denied') return recover();
+      st.fails++;
+      console.warn('sync failed', e && e.code);
+      if (st.fails <= 6) { st.again = true; clearTimeout(st.timer); st.timer = setTimeout(run, Math.min(60000, 2000 * 2 ** st.fails)); }
+    }
+  }
+  /* the server refused our edits (for example a viewer, or a removed member): keep a copy aside, then show the server's truth again */
+  async function recover() {
+    try { stashLocal('unsynced', JSON.stringify(S)); localStorage.removeItem('app.dirty'); } catch (e) { /* storage unavailable */ }
+    if (typeof toast === 'function') toast(tr('لا تملك صلاحية هذا التعديل. أعدنا آخر نسخة من السحابة وحفظنا نسختك جانبًا.', 'You do not have permission for that edit. The cloud copy was restored and yours was kept aside.'));
+    try { await loadOrg(st.orgId); if (typeof closeAllSheets === 'function') { closeAllSheets(); closeAllPages(); } if (typeof rerender === 'function') rerender(); } catch (e) { console.warn('recover failed', e); }
+  }
 
-  /* remote -> S (skips our own pending writes and identical data, so typing is never interrupted) */
+  /* remote -> S. Everything is normalised on the way in. Our own pending writes are skipped after the first snapshot
+     (so typing is never interrupted), but the first one is applied so an offline reload still shows the cached data. */
+  const ORDER = {
+    ships: (a, b) => (b.created || '').localeCompare(a.created || '') || b.id.localeCompare(a.id),
+    lcs: (a, b) => (b.open || '').localeCompare(a.open || '') || b.no.localeCompare(a.no),
+    companyDocs: (a, b) => a.id.localeCompare(b.id),
+    activity: (a, b) => (a.id < b.id ? 1 : -1),
+  };
   function applyRemote(k, snap) {
-    if (snap.metadata.hasPendingWrites) return;
+    const first = !st.seen[k];
+    st.seen[k] = true;
+    if (snap.metadata.hasPendingWrites && !first) return;
     let changed = false;
     if (k === 'org') {
       if (!snap.exists) return;
-      const d = snap.data();
-      const incoming = clean({ name: d.name, type: d.type, stat: d.stat || '', ptsCode: d.ptsCode || '', goods: d.goods || 'other', valueBand: d.valueBand || '', resell: d.resell !== false, requirements: d.requirements || {}, tax: d.tax || { income: 0, payroll: 0 }, bankSel: d.bankSel || 0, simple: !!d.simple, schema: d.schema });
+      const d = snap.data() || {};
+      const type = sEnum(d.type, ['company', 'sole'], 'company');
+      const req = isObj(d.requirements) ? d.requirements : {};
+      const t = isObj(d.tax) ? d.tax : {};
+      const incoming = clean({ name: sStr(d.name, 120), type, stat: sStr(d.stat, 40), ptsCode: sStr(d.ptsCode, 40), goods: sStr(d.goods, 30) || 'other', valueBand: sEnum(d.valueBand, ['low', 'mid', 'high', ''], ''), resell: d.resell !== false, requirements: Object.fromEntries(REQ_ORDER[type].map((id) => [id, { done: !!(req[id] && req[id].done), note: sStr(req[id] && req[id].note, 500) }])), tax: { income: sNum(t.income, 0, 1e15), payroll: sNum(t.payroll, 0, 1e15) }, schema: d.schema });
       if (!eq(incoming, orgDoc())) {
-        S.org = { ...S.org, type: d.type, name: d.name, stat: d.stat || '', ptsCode: d.ptsCode || '', goods: d.goods || 'other', valueBand: d.valueBand || '', resell: d.resell !== false };
-        S.profile = REQ_ORDER[d.type || 'company'].map((id) => ({ id, done: !!(d.requirements && d.requirements[id] && d.requirements[id].done), note: (d.requirements && d.requirements[id] && d.requirements[id].note) || '' }));
-        S.tax = d.tax || { income: 0, payroll: 0 }; S.bankSel = d.bankSel || 0; S.simple = !!d.simple;
+        S.org = { ...S.org, type, name: incoming.name, stat: incoming.stat, ptsCode: incoming.ptsCode, goods: incoming.goods, valueBand: incoming.valueBand, resell: incoming.resell };
+        S.profile = REQ_ORDER[type].map((id) => ({ id, done: incoming.requirements[id].done, note: incoming.requirements[id].note }));
+        S.tax = incoming.tax;
         changed = true;
       }
     } else {
-      const items = snap.docs.map((x) => strip(x.data()));
-      if (k === 'activity') items.sort((a, b) => (a.id < b.id ? 1 : -1));
+      const items = snap.docs.map((x) => NORMALIZERS[k](strip(x.data()))).filter(Boolean).sort(ORDER[k]);
       const cur = snapshot()[k], inc = {};
       items.forEach((x) => { inc[x[KEYF[k]]] = clean(x); });
       if (!eq(Object.keys(inc).sort().map((i) => inc[i]), Object.keys(cur).sort().map((i) => cur[i]))) { S[k] = items; changed = true; }
@@ -92,9 +128,12 @@ const Cloud = (() => {
     return snap.exists ? snap.data() : {};
   }
   async function loadOrg(orgId) {
-    const keep = { theme: S.theme, seenNotif: S.seenNotif };
+    /* edits made on this device that never reached the server would be replaced by the cloud copy: keep them aside
+       (when Firestore persistence is on, the SDK replays its own queued writes, so no copy is needed) */
+    try { if (!st.persist && localStorage.getItem('app.dirty') && S && S.mode === 'live' && S.onboarded && !hasStash('unsynced')) stashLocal('unsynced', JSON.stringify(S)); } catch (e) { /* storage unavailable */ }
+    const keep = { theme: S.theme, seenNotif: S.seenNotif, simple: S.simple, bankSel: S.bankSel }; /* personal preferences stay on the device */
     S = { ...emptyState(), mode: 'live', onboarded: true, ...keep };
-    st.orgId = orgId; st.last = null;
+    st.orgId = orgId; st.last = null; st.seen = {};
     const m = await orgRef().collection('members').doc(st.user.uid).get();
     st.role = m.exists ? m.data().role : null;
     await watch();
@@ -115,6 +154,13 @@ const Cloud = (() => {
     orgId: () => st.orgId,
     role: () => st.role,
     queue, flush,
+    /* viewers cannot edit: show the server's copy again instead of letting local edits drift */
+    readOnly: () => st.role === 'viewer',
+    hasChanges: () => !eq(snapshot(), st.last || {}),
+    async deny() {
+      if (typeof toast === 'function') toast(tr('أنت مشاهد: لا يمكنك التعديل.', 'You are a viewer: editing is not allowed.'));
+      try { await loadOrg(st.orgId); if (typeof closeAllSheets === 'function') { closeAllSheets(); closeAllPages(); } if (typeof rerender === 'function') rerender(); } catch (e) { console.warn('deny failed', e); }
+    },
 
     async init() {
       const c = cfg();
@@ -124,7 +170,7 @@ const Cloud = (() => {
           if (!firebase.apps.length) firebase.initializeApp(c.config);
           st.auth = firebase.auth(); st.db = firebase.firestore(); st.storage = firebase.storage();
           if (c.emulators) { st.auth.useEmulator(c.emulators.auth, { disableWarnings: true }); st.db.useEmulator(...c.emulators.firestore); st.storage.useEmulator(...c.emulators.storage); }
-          else { try { await st.db.enablePersistence({ synchronizeTabs: true }); } catch (e) { /* multi-tab or unsupported */ } }
+          else { try { await st.db.enablePersistence({ synchronizeTabs: true }); st.persist = true; } catch (e) { /* multi-tab or unsupported */ } }
         }
         if (st.auth.isSignInWithEmailLink(location.href)) { await api.completeEmailLink(); }
         st.user = await new Promise((res) => { const un = st.auth.onAuthStateChanged((u) => { un(); res(u); }); });
@@ -150,7 +196,7 @@ const Cloud = (() => {
       b.set(o.collection('members').doc(st.user.uid), { role: 'owner', joinedAt: ts(), displayName: st.user.displayName || null, email: st.user.email || null, phone: st.user.phoneNumber || null });
       b.set(st.db.collection('users').doc(st.user.uid), { activeOrgId: id, lang: LANG, theme: S.theme || null, updatedAt: ts() }, { merge: true });
       await b.commit();
-      st.orgId = id; st.role = 'owner'; st.last = { org: orgDoc() };
+      st.orgId = id; st.role = 'owner'; st.last = { org: orgDoc() }; st.seen = {};
       await flush();
       watch();
     },
@@ -224,7 +270,7 @@ const Cloud = (() => {
     async signOut() {
       unwatch(); clearTimeout(st.timer);
       await st.auth.signOut();
-      st.orgId = null; st.role = null; st.last = null;
+      st.orgId = null; st.role = null; st.last = null; st.seen = {};
       const cr = await st.auth.signInAnonymously(); st.user = cr.user;
     },
 
