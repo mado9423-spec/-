@@ -51,6 +51,7 @@ npm run serve                # معاينة محلية على :5173
 | `npm run test:rules` | 18 اختبارًا لقواعد Firestore وStorage على المحاكيات (Java مطلوب) |
 | `npm run test:e2e` | منشأة ودعوة وقبول ولحظي ومشاهد بمتصفحين على المحاكيات |
 | `npm run test:functions` | منطق التذكيرات اليومية |
+| `npm run test:live -- <الرابط>` | فحص بعد النشر: الترويسات وتطابق تجزئات CSP مع الصفحة المنشورة والأصول، ثم متصفح حقيقي (البداية بالعربية والإنجليزية، لا مخالفات CSP، لا طلبات خارجية، عامل الخدمة) |
 | `npm run test:all` | الكل |
 
 > خلف وكيل HTTP: أزل `HTTPS_PROXY` عند تشغيل المحاكيات، فمحاكي Storage ينادي محاكي Firestore محليًا.
@@ -73,7 +74,7 @@ vercel.json           مولَّد من البناء (ترويسات الأما�
 
 ## النشر
 
-الناتج ملفات ثابتة في `app/` ويصلح لأي استضافة ثابتة. `npm run build` يولّد `vercel.json` و`app/vercel.json` و`app/_headers` و`firebase.json` (ترويسات: CSP بتجزئات SHA-256، HSTS، `nosniff`…) من الصفحة نفسها، فلا تنحرف. الترويسات تشمل `noindex` لأنه نموذج تجريبي (أزلها عند الإطلاق العلني).
+منشور على Vercel: **https://dalil-tla1.vercel.app** (مشروع `dalil`، نموذج تجريبي بالوضع المحلي بلا Firebase). الناتج ملفات ثابتة في `app/` ويصلح لأي استضافة ثابتة. بعد كل نشر شغّل `npm run test:live -- <الرابط>`. `npm run build` يولّد `vercel.json` و`app/vercel.json` و`app/_headers` و`firebase.json` (ترويسات: CSP بتجزئات SHA-256، HSTS، `nosniff`…) من الصفحة نفسها، فلا تنحرف. الترويسات تشمل `noindex` لأنه نموذج تجريبي (أزلها عند الإطلاق العلني).
 
 ## ما هو حقيقي وما هو محاكى
 
